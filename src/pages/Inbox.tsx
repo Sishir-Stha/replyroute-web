@@ -5,6 +5,7 @@ import {
   Building2,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Clock,
   Filter,
@@ -135,8 +136,11 @@ export default function Inbox() {
   const [newNote, setNewNote] = useState('');
   const [replyText, setReplyText] = useState('');
   const [timelineOpen, setTimelineOpen] = useState(true);
+  const [filterPanelWidth, setFilterPanelWidth] = useState(224);
+  const [filterPanelCollapsed, setFilterPanelCollapsed] = useState(false);
   const [messageListWidth, setMessageListWidth] = useState(384);
-  const resizeStateRef = useRef({ startX: 0, startWidth: 384 });
+  const filterResizeStateRef = useRef({ startX: 0, startWidth: 224 });
+  const messageResizeStateRef = useRef({ startX: 0, startWidth: 384 });
 
   const visibleInquiries = useMemo(() => getVisibleInquiries(inquiries, user), [inquiries, user]);
   const allowedDepartmentFilters = useMemo(
@@ -275,9 +279,38 @@ export default function Inbox() {
     });
   };
 
+  const startFilterPanelResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (filterPanelCollapsed) return;
+
+    event.preventDefault();
+    filterResizeStateRef.current = {
+      startX: event.clientX,
+      startWidth: filterPanelWidth,
+    };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const delta = moveEvent.clientX - filterResizeStateRef.current.startX;
+      const nextWidth = filterResizeStateRef.current.startWidth + delta;
+      const maxWidth = Math.min(360, Math.max(220, window.innerWidth * 0.32));
+      setFilterPanelWidth(Math.min(Math.max(nextWidth, 180), maxWidth));
+    };
+
+    const stopResize = () => {
+      document.removeEventListener('pointermove', handlePointerMove);
+      document.removeEventListener('pointerup', stopResize);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    document.addEventListener('pointermove', handlePointerMove);
+    document.addEventListener('pointerup', stopResize, { once: true });
+  };
+
   const startMessageListResize = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
-    resizeStateRef.current = {
+    messageResizeStateRef.current = {
       startX: event.clientX,
       startWidth: messageListWidth,
     };
@@ -285,9 +318,10 @@ export default function Inbox() {
     document.body.style.userSelect = 'none';
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
-      const delta = moveEvent.clientX - resizeStateRef.current.startX;
-      const nextWidth = resizeStateRef.current.startWidth + delta;
-      const maxWidth = Math.min(640, Math.max(320, window.innerWidth - 560));
+      const delta = moveEvent.clientX - messageResizeStateRef.current.startX;
+      const nextWidth = messageResizeStateRef.current.startWidth + delta;
+      const activeFilterWidth = filterPanelCollapsed ? 48 : filterPanelWidth;
+      const maxWidth = Math.min(640, Math.max(320, window.innerWidth - activeFilterWidth - 380));
       setMessageListWidth(Math.min(Math.max(nextWidth, 280), maxWidth));
     };
 
@@ -304,65 +338,109 @@ export default function Inbox() {
 
   return (
     <div className="flex h-[calc(100vh-64px)] overflow-hidden">
-      <div className="w-56 shrink-0 overflow-y-auto border-r border-gray-200 bg-white p-3">
-        <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">Quick Filters</h3>
-        <div className="mb-4 space-y-0.5">
-          {quickFilters.map((filter) => (
-            <button
-              key={filter.key}
-              onClick={() => setQuickFilter(filter.key)}
-              className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-sm transition-colors ${
-                quickFilter === filter.key ? 'bg-ocean-50 font-medium text-ocean-700' : 'text-gray-600 hover:bg-gray-50'
-              }`}
+      {!filterPanelCollapsed && (
+        <>
+          <div
+            className="shrink-0 overflow-hidden border-r border-gray-200 bg-white p-3 transition-[width] duration-200"
+            style={{ width: filterPanelWidth }}
+          >
+          <div className="h-full overflow-y-auto">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400">Quick Filters</h3>
+              <button
+                type="button"
+                onClick={() => setFilterPanelCollapsed(true)}
+                className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+                aria-label="Collapse quick filters"
+                title="Collapse quick filters"
+              >
+                <ChevronLeft size={15} />
+              </button>
+            </div>
+
+            <div className="mb-4 space-y-0.5">
+              {quickFilters.map((filter) => (
+                <button
+                  key={filter.key}
+                  onClick={() => setQuickFilter(filter.key)}
+                  className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-sm transition-colors ${
+                    quickFilter === filter.key ? 'bg-ocean-50 font-medium text-ocean-700' : 'text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  <span className="truncate">{filter.label}</span>
+                  <span className={`shrink-0 text-xs font-medium ${quickFilter === filter.key ? 'text-ocean-500' : 'text-gray-400'}`}>
+                    {counts[filter.key as keyof typeof counts]}
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Channel</h3>
+            <select
+              value={channelFilter}
+              onChange={(event) => setChannelFilter(event.target.value as Channel | 'all')}
+              className="mb-4 w-full rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-sm text-gray-700 outline-none focus:border-ocean-400"
             >
-              <span>{filter.label}</span>
-              <span className={`text-xs font-medium ${quickFilter === filter.key ? 'text-ocean-500' : 'text-gray-400'}`}>
-                {counts[filter.key as keyof typeof counts]}
-              </span>
-            </button>
-          ))}
-        </div>
+              {channelFilters.map((filter) => <option key={filter.value} value={filter.value}>{filter.label}</option>)}
+            </select>
 
-        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Channel</h3>
-        <select
-          value={channelFilter}
-          onChange={(event) => setChannelFilter(event.target.value as Channel | 'all')}
-          className="mb-4 w-full rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-sm text-gray-700 outline-none focus:border-ocean-400"
-        >
-          {channelFilters.map((filter) => <option key={filter.value} value={filter.value}>{filter.label}</option>)}
-        </select>
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Status</h3>
+            <select
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value as InquiryStatus | 'all')}
+              className="mb-4 w-full rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-sm text-gray-700 outline-none focus:border-ocean-400"
+            >
+              {statusFilters.map((filter) => <option key={filter.value} value={filter.value}>{filter.label}</option>)}
+            </select>
 
-        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Status</h3>
-        <select
-          value={statusFilter}
-          onChange={(event) => setStatusFilter(event.target.value as InquiryStatus | 'all')}
-          className="mb-4 w-full rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-sm text-gray-700 outline-none focus:border-ocean-400"
-        >
-          {statusFilters.map((filter) => <option key={filter.value} value={filter.value}>{filter.label}</option>)}
-        </select>
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Department</h3>
+            <select
+              value={effectiveDeptFilter}
+              disabled={allowedDepartmentFilters.length === 1}
+              onChange={(event) => setDeptFilter(event.target.value as Department | 'all')}
+              className="w-full rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-sm text-gray-700 outline-none focus:border-ocean-400 disabled:cursor-not-allowed disabled:text-gray-400"
+            >
+              {allowedDepartmentFilters.map((department) => (
+                <option key={department} value={department}>
+                  {department === 'all' ? 'All Departments' : department}
+                </option>
+              ))}
+            </select>
+          </div>
+          </div>
 
-        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Department</h3>
-        <select
-          value={effectiveDeptFilter}
-          disabled={allowedDepartmentFilters.length === 1}
-          onChange={(event) => setDeptFilter(event.target.value as Department | 'all')}
-          className="w-full rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-sm text-gray-700 outline-none focus:border-ocean-400 disabled:cursor-not-allowed disabled:text-gray-400"
-        >
-          {allowedDepartmentFilters.map((department) => (
-            <option key={department} value={department}>
-              {department === 'all' ? 'All Departments' : department}
-            </option>
-          ))}
-        </select>
-      </div>
+          <div
+            role="separator"
+            aria-label="Resize quick filters"
+            title="Drag to resize quick filters"
+            onPointerDown={startFilterPanelResize}
+            onDoubleClick={() => setFilterPanelCollapsed(true)}
+            className="group relative w-2 shrink-0 cursor-col-resize border-x border-gray-100 bg-white transition-colors hover:bg-ocean-50"
+          >
+            <div className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-gray-200 group-hover:bg-ocean-400" />
+          </div>
+        </>
+      )}
 
       <div
-        className="flex shrink-0 flex-col bg-white"
+        className="flex min-w-0 shrink-0 flex-col bg-white"
         style={{ width: messageListWidth }}
       >
         <div className="border-b border-gray-200 p-3">
-          <div className="relative">
-            <Search size={15} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+          <div className="flex items-center gap-2">
+            {filterPanelCollapsed && (
+              <button
+                type="button"
+                onClick={() => setFilterPanelCollapsed(false)}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-500 transition-colors hover:border-ocean-200 hover:bg-ocean-50 hover:text-ocean-700"
+                aria-label="Expand quick filters"
+                title="Expand quick filters"
+              >
+                <Filter size={16} />
+              </button>
+            )}
+            <div className="relative min-w-0 flex-1">
+              <Search size={15} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
             <input
               type="text"
               value={search}
@@ -370,6 +448,7 @@ export default function Inbox() {
               placeholder="Search messages, keywords..."
               className="w-full rounded-lg border border-gray-200 bg-gray-50 py-2 pl-8 pr-3 text-sm outline-none focus:border-ocean-400"
             />
+            </div>
           </div>
           <div className="mt-2 flex items-center justify-between">
             <span className="text-xs text-gray-500">{filtered.length} messages</span>
