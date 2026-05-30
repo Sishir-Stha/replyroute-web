@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   CheckCircle2,
   Code,
@@ -26,13 +26,13 @@ import {
   slugify,
 } from '@/lib/inquiryForms';
 import {
-  addForm,
-  deleteForm,
-  duplicateForm,
-  getForms,
-  getVisibleForms,
-  updateForm,
-} from '@/lib/formStore';
+  createInquiryForm,
+  deleteInquiryForm,
+  getInquiryForms,
+  publishInquiryForm,
+  unpublishInquiryForm,
+  updateInquiryForm,
+} from '@/services/inquiryFormService';
 import {
   canCreateInquiryForm,
   canDeleteInquiryForm,
@@ -81,7 +81,9 @@ function createNamedField(index: number): FormField {
 
 export default function FormBuilder() {
   const { user } = useAuth();
-  const [forms, setForms] = useState<InquiryForm[]>(() => getForms());
+  const [forms, setForms] = useState<InquiryForm[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [copiedValue, setCopiedValue] = useState('');
   const [search, setSearch] = useState('');
   const [departmentFilter, setDepartmentFilter] = useState<DepartmentFilter>('All');
@@ -94,7 +96,7 @@ export default function FormBuilder() {
   const departmentLocked = user?.role === 'DEPARTMENT_HEAD' && user.department !== 'All';
   const activeDepartmentFilter = departmentLocked ? user.department : departmentFilter;
 
-  const visibleForms = useMemo(() => getVisibleForms(user, forms), [forms, user]);
+  const visibleForms = useMemo(() => forms, [forms]);
 
   const filteredForms = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
@@ -114,7 +116,21 @@ export default function FormBuilder() {
     });
   }, [activeDepartmentFilter, search, statusFilter, visibleForms]);
 
-  const refreshForms = () => setForms(getForms());
+  const refreshForms = async () => {
+    setLoading(true);
+    setLoadError('');
+    try {
+      setForms(await getInquiryForms());
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : 'Unable to load inquiry forms.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshForms();
+  }, []);
 
   const copyText = (value: string) => {
     void navigator.clipboard.writeText(value);
@@ -125,7 +141,10 @@ export default function FormBuilder() {
   const openCreateModal = () => {
     if (!canCreateInquiryForm(user)) return;
 
-    const form = createBlankInquiryForm(getDefaultDepartment(user?.department), user?.name ?? 'ReplyRoute User');
+    const form = {
+      ...createBlankInquiryForm(getDefaultDepartment(user?.department), user?.name ?? 'ReplyRoute User'),
+      departmentId: user?.department !== 'All' ? user?.departmentId : undefined,
+    };
     setDraftForm(form);
     setModalMode('create');
     setFormError('');
@@ -200,7 +219,7 @@ export default function FormBuilder() {
     });
   };
 
-  const saveDraftForm = () => {
+  const saveDraftForm = async () => {
     if (!draftForm || !modalMode) return;
 
     const ownedDepartment = user?.department !== 'All' ? user?.department : draftForm.department;
@@ -239,34 +258,51 @@ export default function FormBuilder() {
       slug: normalizedSlug,
       description: draftForm.description.trim(),
       department,
+      departmentId: user?.role === 'DEPARTMENT_HEAD' ? user.departmentId : draftForm.departmentId,
       inquiryType: draftForm.inquiryType.trim(),
       fields: normalizedFields,
     };
 
-    if (modalMode === 'create') {
-      addForm(payload);
-    } else if (canEditInquiryForm(user, draftForm)) {
-      updateForm(draftForm.id, payload);
-    }
+    try {
+      if (modalMode === 'create') {
+        await createInquiryForm(payload);
+      } else if (canEditInquiryForm(user, draftForm)) {
+        await updateInquiryForm(draftForm.id, payload);
+      }
 
-    refreshForms();
-    closeModal();
+      await refreshForms();
+      closeModal();
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : 'Unable to save form.');
+    }
   };
 
   const togglePublishStatus = (form: InquiryForm) => {
     if (!canPublishInquiryForm(user, form)) return;
 
-    updateForm(form.id, {
-      status: form.status === 'Published' ? 'Inactive' : 'Published',
-    });
-    refreshForms();
+    const request = form.status === 'Published'
+      ? unpublishInquiryForm(form.id)
+      : publishInquiryForm(form.id);
+
+    void request
+      .then(refreshForms)
+      .catch((error) => setLoadError(error instanceof Error ? error.message : 'Unable to update form status.'));
   };
 
   const duplicateExistingForm = (form: InquiryForm) => {
     if (!canCreateInquiryForm(user) || !canEditInquiryForm(user, form)) return;
 
-    duplicateForm(form.id);
-    refreshForms();
+    const copy: InquiryForm = {
+      ...form,
+      id: `copy-${form.id}`,
+      title: `${form.title} Copy`,
+      slug: `${form.slug}-copy-${Date.now().toString(36)}`,
+      status: 'Draft',
+    };
+
+    void createInquiryForm(copy)
+      .then(refreshForms)
+      .catch((error) => setLoadError(error instanceof Error ? error.message : 'Unable to duplicate form.'));
   };
 
   const deleteExistingForm = (form: InquiryForm) => {
@@ -278,9 +314,15 @@ export default function FormBuilder() {
   const confirmDeleteForm = () => {
     if (!formToDelete) return;
 
-    deleteForm(formToDelete.id);
-    setFormToDelete(null);
-    refreshForms();
+    void deleteInquiryForm(formToDelete.id)
+      .then(async () => {
+        setFormToDelete(null);
+        await refreshForms();
+      })
+      .catch((error) => {
+        setLoadError(error instanceof Error ? error.message : 'Unable to delete form.');
+        setFormToDelete(null);
+      });
   };
 
   return (
@@ -312,6 +354,12 @@ export default function FormBuilder() {
           </p>
         </div>
       </div>
+
+      {loadError && (
+        <div className="rounded-xl border border-red-100 bg-red-50 p-4 text-sm text-red-700">
+          {loadError}
+        </div>
+      )}
 
       <div className="grid gap-3 rounded-xl border border-gray-200 bg-white p-4 shadow-sm lg:grid-cols-[1fr_220px_180px]">
         <label className="relative block">
@@ -480,7 +528,7 @@ export default function FormBuilder() {
 
       {filteredForms.length === 0 && (
         <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-sm text-gray-500">
-          No inquiry forms match this view.
+          {loading ? 'Loading inquiry forms...' : 'No inquiry forms match this view.'}
         </div>
       )}
 

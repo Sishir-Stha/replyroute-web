@@ -1,9 +1,9 @@
 /* eslint-disable react-refresh/only-export-components */
-import { createContext, useContext, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { DemoUser } from '@/types';
-
-const STORAGE_KEY = 'replyroute.currentUser';
+import { clearStoredAuth, getStoredToken, getStoredUser, setStoredToken, setStoredUser } from '@/lib/authStorage';
+import { getCurrentUser, loginRequest } from '@/services/authService';
+import type { DemoUser, UserRole } from '@/types';
 
 export const demoUsers: DemoUser[] = [
   {
@@ -64,28 +64,24 @@ export const demoUsers: DemoUser[] = [
   },
 ];
 
+type LoginResult = {
+  success: boolean;
+  message?: string;
+};
+
 type AuthContextValue = {
   user: DemoUser | null;
   currentUser: DemoUser | null;
+  token: string | null;
   isAuthenticated: boolean;
-  login: (email: string, password: string) => { success: boolean; message?: string };
+  isLoading: boolean;
+  login: (email: string, password: string) => Promise<LoginResult>;
   logout: () => void;
+  hasRole: (role: UserRole) => boolean;
+  hasAnyRole: (roles: UserRole[]) => boolean;
 };
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
-
-function getStoredUser() {
-  const stored = localStorage.getItem(STORAGE_KEY);
-  if (!stored) return null;
-
-  try {
-    const parsed = JSON.parse(stored) as DemoUser;
-    return demoUsers.find((user) => user.email === parsed.email) ?? null;
-  } catch {
-    localStorage.removeItem(STORAGE_KEY);
-    return null;
-  }
-}
 
 type AuthProviderProps = {
   children: ReactNode;
@@ -93,32 +89,68 @@ type AuthProviderProps = {
 
 export function AuthProvider({ children }: AuthProviderProps) {
   const [user, setUser] = useState<DemoUser | null>(() => getStoredUser());
+  const [token, setToken] = useState<string | null>(() => getStoredToken());
+  const [isLoading, setIsLoading] = useState(Boolean(getStoredToken()));
+
+  const logout = useCallback(() => {
+    clearStoredAuth();
+    setUser(null);
+    setToken(null);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const storedToken = getStoredToken();
+
+    if (!storedToken) {
+      setIsLoading(false);
+      return;
+    }
+
+    setIsLoading(true);
+    getCurrentUser()
+      .then((freshUser) => {
+        if (cancelled) return;
+        setStoredUser(freshUser);
+        setUser(freshUser);
+        setToken(storedToken);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        logout();
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [logout]);
 
   const value = useMemo<AuthContextValue>(() => ({
     user,
     currentUser: user,
-    isAuthenticated: Boolean(user),
-    login: (email: string, _password: string) => {
-      const normalizedEmail = email.trim().toLowerCase();
-      const matchedUser = demoUsers.find((demoUser) => demoUser.email === normalizedEmail);
-
-      if (!matchedUser) {
-        return { success: false, message: 'Use one of the demo emails listed below.' };
+    token,
+    isAuthenticated: Boolean(user && token),
+    isLoading,
+    login: async (email: string, password: string) => {
+      try {
+        const result = await loginRequest(email.trim().toLowerCase(), password);
+        setStoredToken(result.token);
+        setStoredUser(result.user);
+        setToken(result.token);
+        setUser(result.user);
+        return { success: true };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unable to sign in.';
+        return { success: false, message };
       }
-
-      if (_password !== 'demo123') {
-        return { success: false, message: 'Demo password is demo123.' };
-      }
-
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(matchedUser));
-      setUser(matchedUser);
-      return { success: true };
     },
-    logout: () => {
-      localStorage.removeItem(STORAGE_KEY);
-      setUser(null);
-    },
-  }), [user]);
+    logout,
+    hasRole: (role) => user?.role === role,
+    hasAnyRole: (roles) => (user ? roles.includes(user.role) : false),
+  }), [isLoading, logout, token, user]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

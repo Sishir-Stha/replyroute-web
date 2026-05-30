@@ -83,10 +83,13 @@ export default function RoutingRules() {
   const [draft, setDraft] = useState<RuleDraft>(() => createEmptyDraft());
   const [ruleError, setRuleError] = useState('');
   const [ruleToDelete, setRuleToDelete] = useState<RoutingRule | null>(null);
+  const [saving, setSaving] = useState(false);
 
   const toggleRule = (id: string) => {
     if (!canEdit) return;
-    toggleRoutingRule(id);
+    void toggleRoutingRule(id).catch((error) => {
+      setRuleError(error instanceof Error ? error.message : 'Unable to toggle rule.');
+    });
   };
 
   const openCreateModal = () => {
@@ -115,7 +118,7 @@ export default function RoutingRules() {
     setDraft((current) => ({ ...current, ...updates }));
   };
 
-  const saveRule = () => {
+  const saveRule = async () => {
     if (!canEdit || !modalMode) return;
 
     const name = draft.name.trim();
@@ -138,38 +141,49 @@ export default function RoutingRules() {
     const nextAction = draft.nextAction.trim()
       || `${draft.targetDepartment} should review and respond.`;
 
-    if (modalMode === 'create') {
-      addRoutingRule({
-        name,
-        keywords,
-        targetDepartment: draft.targetDepartment,
-        priority: draft.priority,
-        active: draft.active,
-        description,
-        routingReason,
-        nextAction,
-      });
-    } else if (draft.id) {
-      updateRoutingRule(draft.id, {
-        name,
-        keywords,
-        targetDepartment: draft.targetDepartment,
-        priority: draft.priority,
-        active: draft.active,
-        description,
-        routingReason,
-        nextAction,
-      });
-    }
+    setSaving(true);
+    try {
+      if (modalMode === 'create') {
+        await addRoutingRule({
+          name,
+          keywords,
+          targetDepartment: draft.targetDepartment,
+          priority: draft.priority,
+          active: draft.active,
+          description,
+          routingReason,
+          nextAction,
+        });
+      } else if (draft.id) {
+        await updateRoutingRule(draft.id, {
+          name,
+          keywords,
+          targetDepartment: draft.targetDepartment,
+          priority: draft.priority,
+          active: draft.active,
+          description,
+          routingReason,
+          nextAction,
+        });
+      }
 
-    closeRuleModal();
+      closeRuleModal();
+    } catch (error) {
+      setRuleError(error instanceof Error ? error.message : 'Unable to save rule.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const confirmDeleteRule = () => {
     if (!ruleToDelete) return;
 
-    deleteRoutingRule(ruleToDelete.id);
-    setRuleToDelete(null);
+    void deleteRoutingRule(ruleToDelete.id)
+      .then(() => setRuleToDelete(null))
+      .catch((error) => {
+        setRuleError(error instanceof Error ? error.message : 'Unable to delete rule.');
+        setRuleToDelete(null);
+      });
   };
 
   return (
@@ -430,9 +444,10 @@ export default function RoutingRules() {
               <button
                 type="button"
                 onClick={saveRule}
-                className="rounded-lg bg-gradient-to-r from-ocean-500 to-teal-500 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:opacity-95"
+                disabled={saving}
+                className="rounded-lg bg-gradient-to-r from-ocean-500 to-teal-500 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {modalMode === 'create' ? 'Create Rule' : 'Save Rule'}
+                {saving ? 'Saving...' : modalMode === 'create' ? 'Create Rule' : 'Save Rule'}
               </button>
             </div>
           </div>

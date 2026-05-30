@@ -28,7 +28,7 @@ const demoUserGroups = [
 
 export default function Login() {
   const navigate = useNavigate();
-  const { user, login } = useAuth();
+  const { user, login, isLoading } = useAuth();
   const [email, setEmail] = useState('admin@replyroute.com');
   const [password, setPassword] = useState('demo123');
   const [remember, setRemember] = useState(true);
@@ -40,9 +40,10 @@ export default function Login() {
     }
   }, [navigate, user]);
 
-  const handleSubmit = (event: React.FormEvent) => {
+  const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
-    const result = login(email, password);
+    setError('');
+    const result = await login(email, password);
 
     if (!result.success) {
       setError(result.message ?? 'Unable to sign in.');
@@ -135,7 +136,7 @@ export default function Login() {
                 />
                 Remember me
               </label>
-              <span className="text-sm font-medium text-ocean-600">Frontend-only login</span>
+              <span className="text-sm font-medium text-ocean-600">API login</span>
             </div>
             {error && (
               <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -144,9 +145,10 @@ export default function Login() {
             )}
             <button
               type="submit"
-              className="flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-ocean-500 to-teal-500 px-4 py-2.5 text-sm font-semibold text-white shadow-md transition-all hover:opacity-95 hover:shadow-lg"
+              disabled={isLoading}
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-ocean-500 to-teal-500 px-4 py-2.5 text-sm font-semibold text-white shadow-md transition-all hover:opacity-95 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Sign in <ArrowRight size={16} />
+              {isLoading ? 'Checking session...' : 'Sign in'} <ArrowRight size={16} />
             </button>
           </form>
 

@@ -1,10 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Circle, Pencil, Plus, Trash2, X } from 'lucide-react';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { useAuth } from '@/context/AuthContext';
 import { canManageTeam } from '@/lib/permissions';
 import { departments } from '@/lib/routingEngine';
-import { addTeamMember, deleteTeamMember, getTeamMembers, updateTeamMember } from '@/lib/teamStore';
+import { createUser, getUsers, toggleUser, updateUser } from '@/services/userService';
 import type { Department, OnlineStatus, TeamMember, TeamRole } from '@/types';
 
 type TeamModalMode = 'create' | 'edit';
@@ -63,13 +63,29 @@ function createEmptyMember(): TeamMember {
 export default function Team() {
   const { user } = useAuth();
   const canManage = canManageTeam(user);
-  const [members, setMembers] = useState<TeamMember[]>(() => getTeamMembers());
+  const [members, setMembers] = useState<TeamMember[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [modalMode, setModalMode] = useState<TeamModalMode | null>(null);
   const [draftMember, setDraftMember] = useState<TeamMember | null>(null);
   const [memberError, setMemberError] = useState('');
   const [memberToDelete, setMemberToDelete] = useState<TeamMember | null>(null);
 
-  const refreshMembers = () => setMembers(getTeamMembers());
+  const refreshMembers = async () => {
+    setLoading(true);
+    setLoadError('');
+    try {
+      setMembers(await getUsers());
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : 'Unable to load team members.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshMembers();
+  }, []);
 
   const openCreateModal = () => {
     if (!canManage) return;
@@ -97,7 +113,7 @@ export default function Team() {
     setDraftMember((current) => (current ? { ...current, ...updates } : current));
   };
 
-  const saveMember = () => {
+  const saveMember = async () => {
     if (!draftMember || !modalMode || !canManage) return;
 
     if (!draftMember.name.trim()) {
@@ -117,22 +133,32 @@ export default function Team() {
       avgResponseTime: draftMember.avgResponseTime.trim() || '1h',
     };
 
-    if (modalMode === 'create') {
-      addTeamMember(payload);
-    } else {
-      updateTeamMember(payload.id, payload);
-    }
+    try {
+      if (modalMode === 'create') {
+        await createUser({ ...payload, password: 'demo123' });
+      } else {
+        await updateUser(payload.id, payload);
+      }
 
-    refreshMembers();
-    closeModal();
+      await refreshMembers();
+      closeModal();
+    } catch (error) {
+      setMemberError(error instanceof Error ? error.message : 'Unable to save team member.');
+    }
   };
 
   const confirmDeleteMember = () => {
     if (!memberToDelete) return;
 
-    deleteTeamMember(memberToDelete.id);
-    setMemberToDelete(null);
-    refreshMembers();
+    void toggleUser(memberToDelete.id)
+      .then(async () => {
+        setMemberToDelete(null);
+        await refreshMembers();
+      })
+      .catch((error) => {
+        setLoadError(error instanceof Error ? error.message : 'Unable to toggle team member.');
+        setMemberToDelete(null);
+      });
   };
 
   return (
@@ -153,6 +179,12 @@ export default function Team() {
           </button>
         )}
       </div>
+
+      {loadError && (
+        <div className="rounded-xl border border-red-100 bg-red-50 p-4 text-sm text-red-700">
+          {loadError}
+        </div>
+      )}
 
       <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
         <table className="w-full">
@@ -220,6 +252,12 @@ export default function Team() {
           </tbody>
         </table>
       </div>
+
+      {members.length === 0 && (
+        <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-sm text-gray-500">
+          {loading ? 'Loading team members...' : 'No team members found.'}
+        </div>
+      )}
 
       {draftMember && modalMode && (
         <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/45 px-4 py-8">
@@ -358,13 +396,13 @@ export default function Team() {
 
       <ConfirmDialog
         open={Boolean(memberToDelete)}
-        title="Delete team member?"
+        title="Archive team member?"
         description={(
           <span>
-            This will remove <span className="font-semibold text-gray-900">{memberToDelete?.name}</span> from the team list.
+            This will toggle <span className="font-semibold text-gray-900">{memberToDelete?.name}</span> active status in the backend.
           </span>
         )}
-        confirmLabel="Delete Member"
+        confirmLabel="Archive Member"
         variant="danger"
         onCancel={() => setMemberToDelete(null)}
         onConfirm={confirmDeleteMember}

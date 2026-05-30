@@ -1,4 +1,5 @@
-import { useState } from 'react';
+/* eslint-disable react-hooks/set-state-in-effect */
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -20,9 +21,14 @@ import {
 } from 'lucide-react';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { useAuth } from '@/context/AuthContext';
-import { addDepartment, deleteDepartment, getDepartments, updateDepartment } from '@/lib/departmentStore';
 import { canManageDepartments } from '@/lib/permissions';
 import { departments as departmentNames } from '@/lib/routingEngine';
+import {
+  createDepartment,
+  getDepartments,
+  toggleDepartment,
+  updateDepartment,
+} from '@/services/departmentService';
 import type { Department, DepartmentInfo } from '@/types';
 
 type DepartmentModalMode = 'create' | 'edit';
@@ -74,13 +80,29 @@ export default function Departments() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const canManage = canManageDepartments(user);
-  const [departments, setDepartments] = useState<DepartmentInfo[]>(() => getDepartments());
+  const [departments, setDepartments] = useState<DepartmentInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [modalMode, setModalMode] = useState<DepartmentModalMode | null>(null);
   const [draftDepartment, setDraftDepartment] = useState<DepartmentInfo | null>(null);
   const [departmentError, setDepartmentError] = useState('');
   const [departmentToDelete, setDepartmentToDelete] = useState<DepartmentInfo | null>(null);
 
-  const refreshDepartments = () => setDepartments(getDepartments());
+  const refreshDepartments = async () => {
+    setLoading(true);
+    setLoadError('');
+    try {
+      setDepartments(await getDepartments());
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : 'Unable to load departments.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshDepartments();
+  }, []);
 
   const openCreateModal = () => {
     if (!canManage) return;
@@ -111,7 +133,7 @@ export default function Departments() {
     setDraftDepartment((current) => (current ? { ...current, ...updates } : current));
   };
 
-  const saveDepartment = () => {
+  const saveDepartment = async () => {
     if (!draftDepartment || !modalMode || !canManage) return;
 
     if (!draftDepartment.description.trim()) {
@@ -125,22 +147,32 @@ export default function Departments() {
       avgResponseTime: draftDepartment.avgResponseTime.trim() || '1h',
     };
 
-    if (modalMode === 'create') {
-      addDepartment(payload);
-    } else {
-      updateDepartment(payload.id, payload);
-    }
+    try {
+      if (modalMode === 'create') {
+        await createDepartment(payload);
+      } else {
+        await updateDepartment(payload.id, payload);
+      }
 
-    refreshDepartments();
-    closeModal();
+      await refreshDepartments();
+      closeModal();
+    } catch (error) {
+      setDepartmentError(error instanceof Error ? error.message : 'Unable to save department.');
+    }
   };
 
   const confirmDeleteDepartment = () => {
     if (!departmentToDelete) return;
 
-    deleteDepartment(departmentToDelete.id);
-    setDepartmentToDelete(null);
-    refreshDepartments();
+    void toggleDepartment(departmentToDelete.id)
+      .then(async () => {
+        setDepartmentToDelete(null);
+        await refreshDepartments();
+      })
+      .catch((error) => {
+        setLoadError(error instanceof Error ? error.message : 'Unable to archive department.');
+        setDepartmentToDelete(null);
+      });
   };
 
   return (
@@ -161,6 +193,12 @@ export default function Departments() {
           </button>
         )}
       </div>
+
+      {loadError && (
+        <div className="rounded-xl border border-red-100 bg-red-50 p-4 text-sm text-red-700">
+          {loadError}
+        </div>
+      )}
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {departments.map((department) => (
@@ -225,6 +263,12 @@ export default function Departments() {
           </div>
         ))}
       </div>
+
+      {departments.length === 0 && (
+        <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-sm text-gray-500">
+          {loading ? 'Loading departments...' : 'No departments found.'}
+        </div>
+      )}
 
       {draftDepartment && modalMode && (
         <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/45 px-4 py-8">
@@ -334,13 +378,13 @@ export default function Departments() {
 
       <ConfirmDialog
         open={Boolean(departmentToDelete)}
-        title="Delete department?"
+        title="Archive department?"
         description={(
           <span>
-            This will remove <span className="font-semibold text-gray-900">{departmentToDelete?.name}</span> from the department admin list.
+            This will toggle <span className="font-semibold text-gray-900">{departmentToDelete?.name}</span> active status in the backend.
           </span>
         )}
-        confirmLabel="Delete Department"
+        confirmLabel="Archive Department"
         variant="danger"
         onCancel={() => setDepartmentToDelete(null)}
         onConfirm={confirmDeleteDepartment}

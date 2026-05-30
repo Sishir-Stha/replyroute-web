@@ -1,8 +1,7 @@
-import { useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { useParams } from 'react-router-dom';
 import { CheckCircle2, MessageSquare, Paperclip } from 'lucide-react';
-import { useInquiries } from '@/context/InquiryContext';
-import { getFormBySlug, getForms } from '@/lib/formStore';
+import { getPublicForm, submitPublicForm } from '@/services/inquiryFormService';
 import type { FormField, InquiryForm, Priority } from '@/types';
 
 const priorities: Priority[] = ['Low', 'Medium', 'High', 'Urgent'];
@@ -153,12 +152,47 @@ function renderField(
 
 export default function PublicInquiryForm() {
   const { formSlug } = useParams();
-  const formDefinition = useMemo(() => getFormBySlug(formSlug), [formSlug]);
-  const availableForms = useMemo(() => getForms().filter((form) => form.status === 'Published'), []);
-  const { addInquiry } = useInquiries();
-  const [responses, setResponses] = useState<Record<string, string>>(() => getInitialResponses(formDefinition));
+  const [formDefinition, setFormDefinition] = useState<InquiryForm | undefined>();
+  const [responses, setResponses] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [routedDepartment, setRoutedDepartment] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!formSlug) return;
+
+    setLoading(true);
+    setError('');
+    getPublicForm(formSlug)
+      .then((form) => {
+        if (cancelled) return;
+        setFormDefinition(form);
+        setResponses(getInitialResponses(form));
+      })
+      .catch((requestError) => {
+        if (cancelled) return;
+        setError(requestError instanceof Error ? requestError.message : 'Form not found.');
+        setFormDefinition(undefined);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [formSlug]);
+
+  if (loading) {
+    return (
+      <PublicFormShell title="Loading form" description="Preparing the public inquiry form.">
+        <div className="rounded-2xl border border-gray-200 bg-white p-8 text-center text-sm text-gray-500 shadow-sm">
+          Loading form...
+        </div>
+      </PublicFormShell>
+    );
+  }
 
   if (!formDefinition) {
     return (
@@ -167,29 +201,11 @@ export default function PublicInquiryForm() {
           <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-ocean-500 to-teal-500 text-white">
             <MessageSquare size={24} />
           </div>
-          <div className="mt-5 grid gap-2">
-            {availableForms.map((item) => (
-              <Link
-                key={item.slug}
-                to={`/f/${item.slug}`}
-                className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm font-medium text-ocean-700 hover:bg-ocean-50"
-              >
-                {item.title}
-              </Link>
-            ))}
+          <h2 className="text-xl font-bold text-gray-900">Form not found</h2>
+          <p className="mt-2 text-sm text-gray-500">
+            {error || 'This form is unavailable or not currently published.'}
+          </p>
           </div>
-        </div>
-      </PublicFormShell>
-    );
-  }
-
-  if (formDefinition.status !== 'Published') {
-    return (
-      <PublicFormShell title={formDefinition.title} description={formDefinition.description}>
-        <div className="rounded-2xl border border-amber-200 bg-white p-8 text-center shadow-sm">
-          <h2 className="text-xl font-bold text-gray-900">This form is not currently accepting responses</h2>
-          <p className="mt-2 text-sm text-gray-500">Please contact the company or try another inquiry form.</p>
-        </div>
       </PublicFormShell>
     );
   }
@@ -198,7 +214,7 @@ export default function PublicInquiryForm() {
     setResponses((current) => ({ ...current, [fieldName]: value }));
   };
 
-  const handleSubmit = (event: React.FormEvent) => {
+  const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
 
     const missingField = formDefinition.fields.find((field) => (
@@ -212,21 +228,21 @@ export default function PublicInquiryForm() {
 
     const message = getResponseValue(responses, ['message', 'inquiryMessage', 'details'])
       || getFallbackMessage(formDefinition, responses);
-    const inquiry = addInquiry({
-      customerName: getResponseValue(responses, ['fullName', 'name', 'customerName']) || 'Public Form Visitor',
-      customerEmail: getResponseValue(responses, ['email', 'customerEmail']) || 'public-form@example.com',
-      customerPhone: getResponseValue(responses, ['phone', 'customerPhone', 'mobile']) || '',
-      companyName: getResponseValue(responses, ['companyName', 'company']) || undefined,
-      message,
-      channel: 'website',
-      category: formDefinition.inquiryType,
-      sourcePage: formDefinition.title,
-      leadSource: `/f/${formDefinition.slug}`,
-      status: 'New',
-    });
-
-    setRoutedDepartment(inquiry.routedDepartment);
-    setError('');
+    try {
+      const result = await submitPublicForm(formDefinition.slug, {
+        fields: responses,
+        customerName: getResponseValue(responses, ['fullName', 'name', 'customerName']) || 'Public Form Visitor',
+        customerEmail: getResponseValue(responses, ['email', 'customerEmail']) || 'public-form@example.com',
+        customerPhone: getResponseValue(responses, ['phone', 'customerPhone', 'mobile']) || '',
+        customerCompanyName: getResponseValue(responses, ['companyName', 'company']) || undefined,
+        message,
+        priority: (responses.priority || 'Medium').toUpperCase() as 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT',
+      });
+      setRoutedDepartment(result.routedDepartment);
+      setError('');
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to submit inquiry.');
+    }
   };
 
   if (routedDepartment) {

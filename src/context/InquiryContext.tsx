@@ -1,9 +1,23 @@
 /* eslint-disable react-refresh/only-export-components */
-import { createContext, useContext, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
-import { departmentOwners, mockRoutingRules } from '@/data/mockData';
-import { addInquiry as persistInquiry, getInquiries, saveInquiries } from '@/lib/inquiryStore';
-import { routeInquiry } from '@/lib/routingEngine';
+import { useAuth } from '@/context/AuthContext';
+import {
+  addInquiryNote,
+  assignOwner,
+  createInquiry,
+  getInquiries,
+  overrideDepartment,
+  replyToInquiry,
+  updateInquiryStatus,
+} from '@/services/inquiryService';
+import {
+  createRoutingRule,
+  deleteRoutingRule,
+  getRoutingRules,
+  toggleRoutingRule,
+  updateRoutingRule,
+} from '@/services/routingRuleService';
 import type { Channel, Inquiry, InquiryStatus, RoutingRule } from '@/types';
 
 type NewInquiryInput = {
@@ -22,150 +36,148 @@ type NewInquiryInput = {
 type InquiryContextValue = {
   inquiries: Inquiry[];
   routingRules: RoutingRule[];
-  addInquiry: (input: NewInquiryInput) => Inquiry;
+  isLoading: boolean;
+  error: string;
+  refreshInquiries: () => Promise<void>;
+  refreshRoutingRules: () => Promise<void>;
+  addInquiry: (input: NewInquiryInput) => Promise<Inquiry>;
   updateInquiry: (id: string, updates: Partial<Inquiry>) => void;
-  toggleRoutingRule: (id: string) => void;
-  updateRoutingRule: (id: string, updates: Partial<RoutingRule>) => void;
-  deleteRoutingRule: (id: string) => void;
-  addRoutingRule: (rule: Omit<RoutingRule, 'id' | 'createdAt'>) => void;
+  replaceInquiry: (inquiry: Inquiry) => void;
+  updateStatus: (id: string, status: InquiryStatus) => Promise<Inquiry>;
+  addNote: (id: string, note: string, internal?: boolean) => Promise<Inquiry>;
+  assignInquiryOwner: (id: string, ownerId: string) => Promise<Inquiry>;
+  overrideInquiryDepartment: (id: string, departmentId: string) => Promise<Inquiry>;
+  reply: (id: string, message: string) => Promise<Inquiry>;
+  toggleRoutingRule: (id: string) => Promise<void>;
+  updateRoutingRule: (id: string, updates: Partial<RoutingRule>) => Promise<void>;
+  deleteRoutingRule: (id: string) => Promise<void>;
+  addRoutingRule: (rule: Omit<RoutingRule, 'id' | 'createdAt'>) => Promise<void>;
 };
 
 const InquiryContext = createContext<InquiryContextValue | undefined>(undefined);
-
-function getSlaHours(priority: Inquiry['priority']) {
-  if (priority === 'Urgent') return 2;
-  if (priority === 'High') return 4;
-  return 8;
-}
-
-function getPreview(message: string) {
-  return message.length > 74 ? `${message.slice(0, 71)}...` : message;
-}
 
 type InquiryProviderProps = {
   children: ReactNode;
 };
 
 export function InquiryProvider({ children }: InquiryProviderProps) {
-  const [inquiries, setInquiries] = useState<Inquiry[]>(() => getInquiries());
-  const [routingRules, setRoutingRules] = useState<RoutingRule[]>(() => mockRoutingRules);
+  const { isAuthenticated, user } = useAuth();
+  const [inquiries, setInquiries] = useState<Inquiry[]>([]);
+  const [routingRules, setRoutingRules] = useState<RoutingRule[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const replaceInquiry = useCallback((inquiry: Inquiry) => {
+    setInquiries((current) => current.map((item) => (
+      item.id === inquiry.id ? inquiry : item
+    )));
+  }, []);
+
+  const refreshInquiries = useCallback(async () => {
+    if (!isAuthenticated) {
+      setInquiries([]);
+      return;
+    }
+
+    setIsLoading(true);
+    setError('');
+    try {
+      setInquiries(await getInquiries());
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Unable to load inquiries.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [isAuthenticated]);
+
+  const refreshRoutingRules = useCallback(async () => {
+    if (!isAuthenticated || user?.role !== 'SUPER_ADMIN') {
+      setRoutingRules([]);
+      return;
+    }
+
+    try {
+      setRoutingRules(await getRoutingRules());
+    } catch {
+      setRoutingRules([]);
+    }
+  }, [isAuthenticated, user?.role]);
+
+  useEffect(() => {
+    void refreshInquiries();
+    void refreshRoutingRules();
+  }, [refreshInquiries, refreshRoutingRules]);
 
   const value = useMemo<InquiryContextValue>(() => ({
     inquiries,
     routingRules,
-    addInquiry: (input) => {
-      const routing = routeInquiry(
-        { message: input.message, category: input.category, sourcePage: input.sourcePage },
-        routingRules,
-      );
-      const createdAt = new Date();
-      const status = input.status ?? 'Assigned';
-      const assignedOwner = status === 'New' ? undefined : departmentOwners[routing.routedDepartment];
-      const inquiry: Inquiry = {
-        id: `inq-${Date.now()}`,
-        customerName: input.customerName,
-        customerEmail: input.customerEmail,
-        customerPhone: input.customerPhone,
-        companyName: input.companyName || undefined,
-        customer: {
-          id: `customer-${Date.now()}`,
-          name: input.customerName,
-          email: input.customerEmail,
-          phone: input.customerPhone,
-          company: input.companyName || undefined,
-        },
-        message: input.message,
-        messagePreview: getPreview(input.message),
-        channel: input.channel,
-        category: input.category,
-        routedDepartment: routing.routedDepartment,
-        assignedDepartment: routing.assignedDepartment,
-        assignedOwner,
-        priority: routing.priority,
-        matchedRule: routing.matchedRule,
-        matchedKeywords: routing.matchedKeywords,
-        routingReason: routing.routingReason,
-        confidence: routing.confidence,
-        department: routing.routedDepartment,
-        assignee: assignedOwner,
-        responseOwner: assignedOwner,
-        status,
-        tags: Array.from(new Set([input.category.toLowerCase(), input.channel, ...routing.matchedKeywords.slice(0, 3)])),
-        createdAt: createdAt.toISOString(),
-        slaDeadline: new Date(createdAt.getTime() + getSlaHours(routing.priority) * 60 * 60 * 1000).toISOString(),
-        isOverdue: false,
-        lastResponseAt: undefined,
-        sourcePage: input.sourcePage,
-        leadSource: input.leadSource ?? input.channel,
-        nextAction: routing.nextAction,
-        routingOverridden: false,
-        timeline: [
-          {
-            id: `tl-${Date.now()}-created`,
-            type: 'created',
-            message: `Inquiry received via ${input.channel}`,
-            timestamp: createdAt.toISOString(),
-          },
-          {
-            id: `tl-${Date.now()}-routing`,
-            type: 'routing',
-            message: `Automatically routed to ${routing.routedDepartment} by ${routing.matchedRule}`,
-            timestamp: createdAt.toISOString(),
-            user: 'ReplyRoute Engine',
-          },
-          ...(assignedOwner
-            ? [{
-              id: `tl-${Date.now()}-assignment`,
-              type: 'assignment' as const,
-              message: `Assigned to ${assignedOwner} (${routing.routedDepartment})`,
-              timestamp: createdAt.toISOString(),
-              user: 'ReplyRoute Engine',
-            }]
-            : []),
-        ],
-        notes: [],
-      };
-
-      setInquiries((current) => {
-        const next = [inquiry, ...current];
-        persistInquiry(inquiry);
-        return next;
-      });
+    isLoading,
+    error,
+    refreshInquiries,
+    refreshRoutingRules,
+    addInquiry: async (input) => {
+      const inquiry = await createInquiry(input);
+      setInquiries((current) => [inquiry, ...current]);
       return inquiry;
     },
     updateInquiry: (id, updates) => {
-      setInquiries((current) => {
-        const next = current.map((inquiry) => (
-          inquiry.id === id ? { ...inquiry, ...updates } : inquiry
-        ));
-        saveInquiries(next);
-        return next;
-      });
-    },
-    toggleRoutingRule: (id) => {
-      setRoutingRules((current) => current.map((rule) => (
-        rule.id === id ? { ...rule, active: !rule.active } : rule
+      setInquiries((current) => current.map((inquiry) => (
+        inquiry.id === id ? { ...inquiry, ...updates } : inquiry
       )));
     },
-    updateRoutingRule: (id, updates) => {
-      setRoutingRules((current) => current.map((rule) => (
-        rule.id === id ? { ...rule, ...updates } : rule
-      )));
+    replaceInquiry,
+    updateStatus: async (id, status) => {
+      const inquiry = await updateInquiryStatus(id, status);
+      replaceInquiry(inquiry);
+      return inquiry;
     },
-    deleteRoutingRule: (id) => {
+    addNote: async (id, note, internal = true) => {
+      const inquiry = await addInquiryNote(id, note, internal);
+      replaceInquiry(inquiry);
+      return inquiry;
+    },
+    assignInquiryOwner: async (id, ownerId) => {
+      const inquiry = await assignOwner(id, ownerId);
+      replaceInquiry(inquiry);
+      return inquiry;
+    },
+    overrideInquiryDepartment: async (id, departmentId) => {
+      const inquiry = await overrideDepartment(id, departmentId);
+      replaceInquiry(inquiry);
+      return inquiry;
+    },
+    reply: async (id, message) => {
+      const inquiry = await replyToInquiry(id, message);
+      replaceInquiry(inquiry);
+      return inquiry;
+    },
+    toggleRoutingRule: async (id) => {
+      const rule = await toggleRoutingRule(id);
+      setRoutingRules((current) => current.map((item) => (item.id === id ? rule : item)));
+    },
+    updateRoutingRule: async (id, updates) => {
+      const currentRule = routingRules.find((rule) => rule.id === id);
+      if (!currentRule) return;
+      const rule = await updateRoutingRule(id, { ...currentRule, ...updates });
+      setRoutingRules((current) => current.map((item) => (item.id === id ? rule : item)));
+    },
+    deleteRoutingRule: async (id) => {
+      await deleteRoutingRule(id);
       setRoutingRules((current) => current.filter((rule) => rule.id !== id));
     },
-    addRoutingRule: (rule) => {
-      setRoutingRules((current) => [
-        ...current,
-        {
-          ...rule,
-          id: `r-${Date.now()}`,
-          createdAt: new Date().toISOString().slice(0, 10),
-        },
-      ]);
+    addRoutingRule: async (ruleInput) => {
+      const rule = await createRoutingRule(ruleInput);
+      setRoutingRules((current) => [...current, rule]);
     },
-  }), [inquiries, routingRules]);
+  }), [
+    error,
+    inquiries,
+    isLoading,
+    refreshInquiries,
+    refreshRoutingRules,
+    replaceInquiry,
+    routingRules,
+  ]);
 
   return <InquiryContext.Provider value={value}>{children}</InquiryContext.Provider>;
 }

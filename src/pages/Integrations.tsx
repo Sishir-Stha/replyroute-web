@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   AtSign,
@@ -15,8 +15,13 @@ import {
   XCircle,
 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
-import { getIntegrations, updateIntegration } from '@/lib/integrationStore';
 import { canManageIntegrations } from '@/lib/permissions';
+import {
+  connectPlaceholder,
+  disconnectIntegration,
+  getIntegrations,
+  providerFromIntegration,
+} from '@/services/integrationService';
 import type { Integration, IntegrationStatus } from '@/types';
 
 const iconMap: Record<string, ReactNode> = {
@@ -58,11 +63,27 @@ const channels: Integration['channel'][] = ['website', 'email', 'facebook', 'ins
 export default function Integrations() {
   const { user } = useAuth();
   const canEdit = canManageIntegrations(user);
-  const [integrations, setIntegrations] = useState<Integration[]>(() => getIntegrations());
+  const [integrations, setIntegrations] = useState<Integration[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [draftIntegration, setDraftIntegration] = useState<Integration | null>(null);
   const [integrationError, setIntegrationError] = useState('');
 
-  const refreshIntegrations = () => setIntegrations(getIntegrations());
+  const refreshIntegrations = async () => {
+    setLoading(true);
+    setLoadError('');
+    try {
+      setIntegrations(await getIntegrations());
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : 'Unable to load integrations.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshIntegrations();
+  }, []);
 
   const openEditModal = (integration: Integration) => {
     if (!canEdit) return;
@@ -93,18 +114,16 @@ export default function Integrations() {
       return;
     }
 
-    const connectedAt = draftIntegration.status === 'Connected'
-      ? draftIntegration.connectedAt || new Date().toISOString().slice(0, 10)
-      : undefined;
+    const request = draftIntegration.status === 'Connected'
+      ? connectPlaceholder(providerFromIntegration(draftIntegration))
+      : disconnectIntegration(draftIntegration.id);
 
-    updateIntegration(draftIntegration.id, {
-      ...draftIntegration,
-      name: draftIntegration.name.trim(),
-      description: draftIntegration.description.trim(),
-      connectedAt,
-    });
-    refreshIntegrations();
-    closeEditModal();
+    void request
+      .then(refreshIntegrations)
+      .then(closeEditModal)
+      .catch((error) => {
+        setIntegrationError(error instanceof Error ? error.message : 'Unable to save integration.');
+      });
   };
 
   return (
@@ -113,6 +132,12 @@ export default function Integrations() {
         <h1 className="text-2xl font-bold text-gray-900">Integrations</h1>
         <p className="text-sm text-gray-500">Connect your communication channels to receive and route inquiries</p>
       </div>
+
+      {loadError && (
+        <div className="rounded-xl border border-red-100 bg-red-50 p-4 text-sm text-red-700">
+          {loadError}
+        </div>
+      )}
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {integrations.map((integration) => {
@@ -156,6 +181,12 @@ export default function Integrations() {
           );
         })}
       </div>
+
+      {integrations.length === 0 && (
+        <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-sm text-gray-500">
+          {loading ? 'Loading integrations...' : 'No integrations found.'}
+        </div>
+      )}
 
       {draftIntegration && (
         <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/45 px-4 py-8">

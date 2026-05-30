@@ -1,12 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { ArrowLeft, Circle, Plus, Trash2 } from 'lucide-react';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { useAuth } from '@/context/AuthContext';
-import { getDepartments } from '@/lib/departmentStore';
 import { canManageDepartments } from '@/lib/permissions';
-import { deleteTeamMember, getTeamMembers, updateTeamMember } from '@/lib/teamStore';
-import type { TeamMember, TeamRole } from '@/types';
+import { getDepartments } from '@/services/departmentService';
+import { getUsers, toggleUser, updateUser } from '@/services/userService';
+import type { DepartmentInfo, TeamMember, TeamRole } from '@/types';
 
 const healthColors = {
   healthy: 'bg-green-500',
@@ -53,11 +53,31 @@ export default function DepartmentDetails() {
   const { departmentId } = useParams();
   const { user } = useAuth();
   const canManage = canManageDepartments(user);
-  const [departments] = useState(() => getDepartments());
-  const [members, setMembers] = useState<TeamMember[]>(() => getTeamMembers());
+  const [departments, setDepartments] = useState<DepartmentInfo[]>([]);
+  const [members, setMembers] = useState<TeamMember[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [selectedMemberId, setSelectedMemberId] = useState('');
   const [memberToRemove, setMemberToRemove] = useState<TeamMember | null>(null);
   const department = departments.find((item) => item.id === departmentId);
+
+  const refreshData = async () => {
+    setLoading(true);
+    setLoadError('');
+    try {
+      const [departmentList, userList] = await Promise.all([getDepartments(), getUsers()]);
+      setDepartments(departmentList);
+      setMembers(userList);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : 'Unable to load department details.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshData();
+  }, []);
 
   if (!department) {
     return (
@@ -66,8 +86,8 @@ export default function DepartmentDetails() {
           <ArrowLeft size={16} /> Back to Departments
         </Link>
         <div className="rounded-xl border border-gray-200 bg-white p-8 text-center shadow-sm">
-          <h1 className="text-xl font-bold text-gray-900">Department not found</h1>
-          <p className="mt-2 text-sm text-gray-500">The selected department is no longer available.</p>
+          <h1 className="text-xl font-bold text-gray-900">{loading ? 'Loading department...' : 'Department not found'}</h1>
+          <p className="mt-2 text-sm text-gray-500">{loadError || 'The selected department is no longer available.'}</p>
         </div>
       </div>
     );
@@ -76,22 +96,32 @@ export default function DepartmentDetails() {
   const departmentMembers = members.filter((member) => member.department === department.name);
   const availableMembers = members.filter((member) => member.department !== department.name);
 
-  const refreshMembers = () => setMembers(getTeamMembers());
-
   const addSelectedMember = () => {
     if (!selectedMemberId || !canManage) return;
 
-    updateTeamMember(selectedMemberId, { department: department.name });
-    setSelectedMemberId('');
-    refreshMembers();
+    const member = members.find((item) => item.id === selectedMemberId);
+    if (!member) return;
+
+    void updateUser(member.id, { ...member, department: department.name, departmentId: department.id })
+      .then(async () => {
+        setSelectedMemberId('');
+        await refreshData();
+      })
+      .catch((error) => setLoadError(error instanceof Error ? error.message : 'Unable to add member.'));
   };
 
   const confirmRemoveMember = () => {
     if (!memberToRemove || !canManage) return;
 
-    deleteTeamMember(memberToRemove.id);
-    setMemberToRemove(null);
-    refreshMembers();
+    void toggleUser(memberToRemove.id)
+      .then(async () => {
+        setMemberToRemove(null);
+        await refreshData();
+      })
+      .catch((error) => {
+        setLoadError(error instanceof Error ? error.message : 'Unable to remove member.');
+        setMemberToRemove(null);
+      });
   };
 
   return (
@@ -111,6 +141,12 @@ export default function DepartmentDetails() {
           <p className="mt-1 max-w-2xl text-sm text-gray-500">{department.description}</p>
         </div>
       </div>
+
+      {loadError && (
+        <div className="rounded-xl border border-red-100 bg-red-50 p-4 text-sm text-red-700">
+          {loadError}
+        </div>
+      )}
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         {[
@@ -227,7 +263,7 @@ export default function DepartmentDetails() {
         title="Remove member?"
         description={(
           <span>
-            This will remove <span className="font-semibold text-gray-900">{memberToRemove?.name}</span> from the whole team list.
+            This will deactivate <span className="font-semibold text-gray-900">{memberToRemove?.name}</span> in the backend.
           </span>
         )}
         confirmLabel="Remove Member"

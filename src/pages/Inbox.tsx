@@ -26,7 +26,6 @@ import { SLAIndicator } from '@/components/common/SLAIndicator';
 import { StatusBadge } from '@/components/common/StatusBadge';
 import { useAuth } from '@/context/AuthContext';
 import { useInquiries } from '@/context/InquiryContext';
-import { departmentOwners } from '@/data/mockData';
 import { getAllowedDepartmentFilters, getVisibleInquiries } from '@/lib/inquiryAccess';
 import {
   canAddNote,
@@ -37,7 +36,8 @@ import {
   canUpdateStatus,
 } from '@/lib/permissions';
 import { departments } from '@/lib/routingEngine';
-import type { Channel, Department, Inquiry, InquiryStatus } from '@/types';
+import { resolveDepartmentId } from '@/services/departmentService';
+import type { Channel, Department, InquiryStatus } from '@/types';
 
 const channelFilters: { value: Channel | 'all'; label: string }[] = [
   { value: 'all', label: 'All Channels' },
@@ -109,24 +109,18 @@ function getReplyMessage(message: string) {
   return message.replace(/^Reply sent: "/, '').replace(/"$/, '');
 }
 
-function addTimelineEntry(inquiry: Inquiry, message: string, userName: string, type: Inquiry['timeline'][number]['type']) {
-  const timestamp = new Date().toISOString();
-
-  return [
-    ...inquiry.timeline,
-    {
-      id: `tl-${timestamp}`,
-      type,
-      message,
-      timestamp,
-      user: userName,
-    },
-  ];
-}
-
 export default function Inbox() {
   const { user } = useAuth();
-  const { inquiries, updateInquiry } = useInquiries();
+  const {
+    inquiries,
+    isLoading,
+    error,
+    updateStatus: updateInquiryStatus,
+    addNote: addInquiryNote,
+    assignInquiryOwner,
+    overrideInquiryDepartment,
+    reply,
+  } = useInquiries();
   const [selectedId, setSelectedId] = useState('');
   const [search, setSearch] = useState('');
   const [channelFilter, setChannelFilter] = useState<Channel | 'all'>('all');
@@ -136,6 +130,8 @@ export default function Inbox() {
   const [newNote, setNewNote] = useState('');
   const [replyText, setReplyText] = useState('');
   const [timelineOpen, setTimelineOpen] = useState(true);
+  const [actionError, setActionError] = useState('');
+  const [actionBusy, setActionBusy] = useState(false);
   const [filterPanelWidth, setFilterPanelWidth] = useState(224);
   const [filterPanelCollapsed, setFilterPanelCollapsed] = useState(false);
   const [messageListWidth, setMessageListWidth] = useState(384);
@@ -187,95 +183,68 @@ export default function Inbox() {
     overdue: visibleInquiries.filter((inquiry) => inquiry.isOverdue).length,
   }), [visibleInquiries]);
 
-  const actor = user?.name ?? 'Demo User';
   const allowDepartmentOverride = canOverrideDepartment(user);
-  const allowAssignOwner = selected ? canAssignOwnerWithinDepartment(user, selected) : false;
+  const allowAssignOwner = selected && user?.role === 'DEPARTMENT_HEAD' ? canAssignOwnerWithinDepartment(user, selected) : false;
   const allowStatusUpdate = selected ? canUpdateStatus(user, selected) : false;
   const allowNote = selected ? canAddNote(user, selected) : false;
   const allowReply = selected ? canReply(user, selected) : false;
   const allowEscalate = selected ? canEscalate(user, selected) : false;
 
+  const runAction = async (action: () => Promise<void>) => {
+    setActionError('');
+    setActionBusy(true);
+    try {
+      await action();
+    } catch (requestError) {
+      setActionError(requestError instanceof Error ? requestError.message : 'Action failed.');
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
   const addNote = () => {
     if (!newNote.trim() || !selected || !allowNote) return;
 
-    const timestamp = new Date().toISOString();
-
-    updateInquiry(selected.id, {
-      notes: [
-        ...selected.notes,
-        {
-          id: `n-${timestamp}`,
-          message: newNote,
-          author: actor,
-          timestamp,
-        },
-      ],
-      timeline: addTimelineEntry(
-        selected,
-        `Note added: "${newNote.slice(0, 50)}${newNote.length > 50 ? '...' : ''}"`,
-        actor,
-        'note',
-      ),
+    const note = newNote;
+    void runAction(async () => {
+      await addInquiryNote(selected.id, note, true);
+      setNewNote('');
     });
-    setNewNote('');
   };
 
   const assignToMe = () => {
-    if (!selected || !allowAssignOwner) return;
+    if (!selected || !allowAssignOwner || !user?.id) return;
 
-    updateInquiry(selected.id, {
-      assignedOwner: actor,
-      assignee: actor,
-      responseOwner: actor,
-      status: 'Assigned',
-      timeline: addTimelineEntry(selected, `Assigned to ${actor}`, actor, 'assignment'),
+    void runAction(async () => {
+      await assignInquiryOwner(selected.id, user.id);
     });
   };
 
   const updateStatus = (status: InquiryStatus) => {
     if (!selected || !allowStatusUpdate) return;
 
-    updateInquiry(selected.id, {
-      status,
-      isOverdue: status === 'Resolved' ? false : selected.isOverdue,
-      lastResponseAt: new Date().toISOString(),
-      timeline: addTimelineEntry(selected, `Status changed to ${status}`, actor, 'status_change'),
+    void runAction(async () => {
+      await updateInquiryStatus(selected.id, status);
     });
   };
 
   const sendReply = () => {
     if (!selected || !allowReply || !replyText.trim()) return;
 
-    updateInquiry(selected.id, {
-      lastResponseAt: new Date().toISOString(),
-      status: selected.status === 'New' ? 'In Progress' : selected.status,
-      timeline: addTimelineEntry(
-        selected,
-        `Reply sent: "${replyText.slice(0, 50)}${replyText.length > 50 ? '...' : ''}"`,
-        actor,
-        'reply',
-      ),
+    const message = replyText;
+    void runAction(async () => {
+      await reply(selected.id, message);
+      setReplyText('');
     });
-    setReplyText('');
   };
 
   const overrideDepartment = (department: Department) => {
     if (!selected || !allowDepartmentOverride || department === selected.assignedDepartment) return;
 
-    const owner = departmentOwners[department];
-    updateInquiry(selected.id, {
-      assignedDepartment: department,
-      department,
-      assignedOwner: owner,
-      assignee: owner,
-      responseOwner: owner,
-      routingOverridden: true,
-      timeline: addTimelineEntry(
-        selected,
-        `Department manually changed from ${selected.assignedDepartment} to ${department} by ${actor}`,
-        actor,
-        'assignment',
-      ),
+    void runAction(async () => {
+      const departmentId = await resolveDepartmentId(department);
+      if (!departmentId) throw new Error(`Could not find department id for ${department}.`);
+      await overrideInquiryDepartment(selected.id, departmentId);
     });
   };
 
@@ -426,7 +395,7 @@ export default function Inbox() {
         className="flex min-w-0 shrink-0 flex-col bg-white"
         style={{ width: messageListWidth }}
       >
-        <div className="border-b border-gray-200 p-3">
+          <div className="border-b border-gray-200 p-3">
           <div className="flex items-center gap-2">
             {filterPanelCollapsed && (
               <button
@@ -451,9 +420,14 @@ export default function Inbox() {
             </div>
           </div>
           <div className="mt-2 flex items-center justify-between">
-            <span className="text-xs text-gray-500">{filtered.length} messages</span>
+            <span className="text-xs text-gray-500">{isLoading ? 'Loading messages...' : `${filtered.length} messages`}</span>
             <span className="flex items-center gap-1 text-xs text-gray-500"><Filter size={12} /> Auto-routed</span>
           </div>
+          {(error || actionError) && (
+            <div className="mt-2 rounded-lg border border-red-100 bg-red-50 px-2 py-1 text-xs text-red-600">
+              {actionError || error}
+            </div>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto">
@@ -588,17 +562,17 @@ export default function Inbox() {
 
             <div className="flex flex-wrap gap-2">
               {allowAssignOwner && (
-                <button onClick={assignToMe} className={getButtonClass(false)}>
-                  <User size={14} /> Assign to me
-                </button>
+              <button onClick={assignToMe} disabled={actionBusy} className={getButtonClass(actionBusy)}>
+                <User size={14} /> Assign to me
+              </button>
               )}
-              <button onClick={() => updateStatus('Pending')} disabled={!allowStatusUpdate} className={getButtonClass(!allowStatusUpdate)}>
+              <button onClick={() => updateStatus('Pending')} disabled={!allowStatusUpdate || actionBusy} className={getButtonClass(!allowStatusUpdate || actionBusy)}>
                 <Clock size={14} /> Mark Pending
               </button>
-              <button onClick={() => updateStatus('Resolved')} disabled={!allowStatusUpdate} className={getButtonClass(!allowStatusUpdate)}>
+              <button onClick={() => updateStatus('Resolved')} disabled={!allowStatusUpdate || actionBusy} className={getButtonClass(!allowStatusUpdate || actionBusy)}>
                 <CheckCircle2 size={14} /> Mark Resolved
               </button>
-              <button onClick={() => updateStatus('Escalated')} disabled={!allowEscalate} className={getButtonClass(!allowEscalate)}>
+              <button onClick={() => updateStatus('Escalated')} disabled={!allowEscalate || actionBusy} className={getButtonClass(!allowEscalate || actionBusy)}>
                 <AlertTriangle size={14} /> Escalate
               </button>
             </div>
@@ -630,7 +604,7 @@ export default function Inbox() {
                 <input
                   type="text"
                   value={newNote}
-                  disabled={!allowNote}
+                  disabled={!allowNote || actionBusy}
                   onChange={(event) => setNewNote(event.target.value)}
                   placeholder="Add a note..."
                   onKeyDown={(event) => event.key === 'Enter' && addNote()}
@@ -638,7 +612,7 @@ export default function Inbox() {
                 />
                 <button
                   onClick={addNote}
-                  disabled={!allowNote}
+                  disabled={!allowNote || actionBusy}
                   className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-gray-200"
                 >
                   <StickyNote size={14} />
@@ -694,7 +668,7 @@ export default function Inbox() {
               <input
                 type="text"
                 value={replyText}
-                disabled={!allowReply}
+                disabled={!allowReply || actionBusy}
                 onChange={(event) => setReplyText(event.target.value)}
                 onKeyDown={(event) => event.key === 'Enter' && sendReply()}
                 placeholder="Type a reply..."
@@ -702,7 +676,7 @@ export default function Inbox() {
               />
               <button
                 onClick={sendReply}
-                disabled={!allowReply}
+                disabled={!allowReply || actionBusy}
                 className="rounded-lg bg-gradient-to-r from-ocean-500 to-teal-500 px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:from-gray-200 disabled:to-gray-200 disabled:text-gray-400"
               >
                 <Send size={16} />

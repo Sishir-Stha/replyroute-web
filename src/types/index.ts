@@ -26,6 +26,9 @@ export interface DemoUser {
   email: string;
   role: UserRole;
   department: UserDepartment;
+  departmentId?: string;
+  company?: string;
+  companyId?: string;
 }
 
 export interface Customer {
@@ -75,7 +78,10 @@ export interface Inquiry {
   channel: Channel;
   category: string;
   routedDepartment: Department;
+  routedDepartmentId?: string;
   assignedDepartment: Department;
+  assignedDepartmentId?: string;
+  assignedOwnerId?: string;
   assignedOwner?: string;
   priority: Priority;
   matchedRule: string;
@@ -110,6 +116,8 @@ export interface DepartmentInfo {
   health: 'healthy' | 'warning' | 'critical';
   resolvedToday: number;
   description: string;
+  active?: boolean;
+  slaMinutes?: number;
 }
 
 export interface TeamMember {
@@ -118,6 +126,7 @@ export interface TeamMember {
   email: string;
   role: TeamRole;
   department: Department;
+  departmentId?: string;
   activeTickets: number;
   resolvedToday: number;
   avgResponseTime: string;
@@ -129,6 +138,7 @@ export interface RoutingRule {
   id: string;
   name: string;
   keywords: string[];
+  targetDepartmentId?: string;
   targetDepartment: Department;
   priority: Priority;
   active: boolean;
@@ -162,6 +172,7 @@ export interface InquiryForm {
   title: string;
   slug: string;
   description: string;
+  departmentId?: string;
   department: Department;
   inquiryType: string;
   status: InquiryFormStatus;
